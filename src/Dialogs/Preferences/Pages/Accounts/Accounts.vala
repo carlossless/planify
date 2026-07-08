@@ -36,12 +36,14 @@ public class Dialogs.Preferences.Pages.Accounts : Dialogs.Preferences.Pages.Base
 
     construct {
         var todoist_item = new Widgets.ContextMenu.MenuItem (_("Todoist"));
+        var things_item = new Widgets.ContextMenu.MenuItem (_("Things"));
         var nextcloud_item = new Widgets.ContextMenu.MenuItem (_("Nextcloud"));
         var caldav_item = new Widgets.ContextMenu.MenuItem (_("CalDAV"));
 
         var menu_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
         menu_box.margin_top = menu_box.margin_bottom = 3;
         menu_box.append (todoist_item);
+        menu_box.append (things_item);
         menu_box.append (nextcloud_item);
         menu_box.append (caldav_item);
 
@@ -135,6 +137,10 @@ public class Dialogs.Preferences.Pages.Accounts : Dialogs.Preferences.Pages.Base
         signal_map[todoist_item.clicked.connect (() => {
             preferences_dialog.push_subpage (new TodoistSetup (preferences_dialog, this));
         })] = todoist_item;
+
+        signal_map[things_item.clicked.connect (() => {
+            preferences_dialog.push_subpage (new ThingsSetup (preferences_dialog, this));
+        })] = things_item;
 
         signal_map[nextcloud_item.clicked.connect (() => {
             preferences_dialog.push_subpage (new NextcloudSetup (preferences_dialog, this));

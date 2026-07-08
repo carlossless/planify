@@ -234,6 +234,12 @@ public class Objects.Label : Objects.BaseObject {
                         Services.Todoist.get_default ().delete.end (res);
                         Services.Store.instance ().delete_label (this);
                     });
+                } else if (source_type == SourceType.THINGS) {
+                    loading = true;
+                    Services.Things.get_default ().delete.begin (this, (obj, res) => {
+                        Services.Things.get_default ().delete.end (res);
+                        Services.Store.instance ().delete_label (this);
+                    });
                 } else if (source_type == SourceType.CALDAV) {
                     loading = true;
                     foreach (Objects.Item item in Services.Store.instance ().get_items_by_label (this, false)) {

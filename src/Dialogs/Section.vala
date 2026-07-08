@@ -201,6 +201,23 @@ public class Dialogs.Section : Adw.Dialog {
             });
         }
 
+        if (section.project.source_type == SourceType.THINGS) {
+            submit_button.is_loading = true;
+            Services.Things.get_default ().update.begin (section, (obj, res) => {
+                submit_button.is_loading = false;
+                HttpResponse response = Services.Things.get_default ().update.end (res);
+
+                if (response.status) {
+                    Services.Store.instance ().update_section (section);
+                    close ();
+                } else {
+                    section.name = _name;
+                    Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
+                    close ();
+                }
+            });
+        }
+
         if (section.project.source_type == SourceType.CALDAV) {
             submit_button.is_loading = true;
             var caldav_client = Services.CalDAV.Core.get_default ().get_client (section.project.source);
@@ -234,6 +251,24 @@ public class Dialogs.Section : Adw.Dialog {
             Services.Todoist.get_default ().add.begin (section, (obj, res) => {
                 submit_button.is_loading = false;
                 HttpResponse response = Services.Todoist.get_default ().add.end (res);
+
+                if (response.status) {
+                    section.id = response.data;
+                    section.project.add_section_if_not_exists (section);
+                    send_toast (_("Section added"));
+                    close ();
+                } else {
+                    Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
+                    close ();
+                }
+            });
+        }
+
+        if (section.project.source_type == SourceType.THINGS) {
+            submit_button.is_loading = true;
+            Services.Things.get_default ().add.begin (section, (obj, res) => {
+                submit_button.is_loading = false;
+                HttpResponse response = Services.Things.get_default ().add.end (res);
 
                 if (response.status) {
                     section.id = response.data;

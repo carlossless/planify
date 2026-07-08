@@ -341,6 +341,8 @@ public class MainWindow : Adw.ApplicationWindow {
             toast.button_clicked.connect (() => {
                 if (source.source_type == SourceType.TODOIST) {
                     Services.Todoist.get_default ().sync.begin (source);
+                } else if (source.source_type == SourceType.THINGS) {
+                    Services.Things.get_default ().sync.begin (source);
                 } else if (source.source_type == SourceType.CALDAV) {
                     Services.CalDAV.Core.get_default ().sync.begin (source);
                 }

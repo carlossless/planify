@@ -823,6 +823,8 @@ public class Services.Database : GLib.Object {
             return_value.data = new Objects.SourceTodoistData.from_json (stmt.column_text (9));
         } else if (return_value.source_type == SourceType.CALDAV) {
             return_value.data = new Objects.SourceCalDAVData.from_json (stmt.column_text (9));
+        } else if (return_value.source_type == SourceType.THINGS) {
+            return_value.data = new Objects.SourceThingsData.from_json (stmt.column_text (9));
         }
 
         return return_value;

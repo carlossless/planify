@@ -267,6 +267,18 @@ public class Services.Store : GLib.Object {
         }
     }
 
+    public bool source_things_exists (string email) {
+        lock (_sources) {
+            foreach (Objects.Source source in sources) {
+                if (source.source_type == SourceType.THINGS && source.things_data.email == email) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     public bool source_caldav_exists (string server_url, string username) {
         bool return_value = false;
 

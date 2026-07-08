@@ -47,6 +47,14 @@ public class Objects.Source : Objects.BaseObject {
         }
     }
 
+    Objects.SourceThingsData _things_data;
+    public Objects.SourceThingsData things_data {
+        get {
+            _things_data = data as Objects.SourceThingsData;
+            return _things_data;
+        }
+    }
+
     public string header_text {
         get {
             return display_name;
@@ -63,6 +71,10 @@ public class Objects.Source : Objects.BaseObject {
             if (source_type == SourceType.CALDAV) {
                 _subheader_text = caldav_data.caldav_type.title ();
                 return _subheader_text;
+            }
+
+            if (source_type == SourceType.THINGS) {
+                return _("Things Cloud");
             }
 
             return "";
@@ -85,6 +97,10 @@ public class Objects.Source : Objects.BaseObject {
                 return caldav_data.user_displayname;
             }
 
+            if (source_type == SourceType.THINGS) {
+                return things_data.email;
+            }
+
             return "";
         }
     }
@@ -97,6 +113,10 @@ public class Objects.Source : Objects.BaseObject {
 
             if (source_type == SourceType.CALDAV) {
                 return caldav_data.user_email;
+            }
+
+            if (source_type == SourceType.THINGS) {
+                return things_data.email;
             }
 
             return "";
@@ -124,6 +144,8 @@ public class Objects.Source : Objects.BaseObject {
             data = new Objects.SourceTodoistData.from_json (node.get_object ().get_string_member ("data"));
         } else if (source_type == SourceType.CALDAV) {
             data = new Objects.SourceCalDAVData.from_json (node.get_object ().get_string_member ("data"));
+        } else if (source_type == SourceType.THINGS) {
+            data = new Objects.SourceThingsData.from_json (node.get_object ().get_string_member ("data"));
         }
     }
 
@@ -160,6 +182,8 @@ public class Objects.Source : Objects.BaseObject {
             Services.Todoist.get_default ().sync.begin (this);
         } else if (source_type == SourceType.CALDAV) {
             Services.CalDAV.Core.get_default ().sync.begin (this);
+        } else if (source_type == SourceType.THINGS) {
+            Services.Things.get_default ().sync.begin (this);
         }
     }
 
@@ -324,6 +348,66 @@ public class Objects.SourceTodoistData : Objects.SourceData {
 
         builder.set_member_name ("api_version");
         builder.add_string_value (api_version);
+
+        builder.end_object ();
+
+        Json.Generator generator = new Json.Generator ();
+        Json.Node root = builder.get_root ();
+        generator.set_root (root);
+
+        return generator.to_data (null);
+    }
+}
+
+public class Objects.SourceThingsData : Objects.SourceData {
+    public string email { get; set; default = ""; }
+    public string password { get; set; default = ""; }
+    public string history_key { get; set; default = ""; }
+    public int64 server_index { get; set; default = 0; }
+
+    public SourceThingsData.from_json (string json) {
+        Json.Parser parser = new Json.Parser ();
+
+        try {
+            parser.load_from_data (json, -1);
+            var object = parser.get_root ().get_object ();
+
+            if (object.has_member ("email")) {
+                email = object.get_string_member ("email");
+            }
+
+            if (object.has_member ("password")) {
+                password = object.get_string_member ("password");
+            }
+
+            if (object.has_member ("history_key")) {
+                history_key = object.get_string_member ("history_key");
+            }
+
+            if (object.has_member ("server_index")) {
+                server_index = object.get_int_member ("server_index");
+            }
+        } catch (Error e) {
+            debug (e.message);
+        }
+    }
+
+    public override string to_json () {
+        builder.reset ();
+
+        builder.begin_object ();
+
+        builder.set_member_name ("email");
+        builder.add_string_value (email);
+
+        builder.set_member_name ("password");
+        builder.add_string_value (password);
+
+        builder.set_member_name ("history_key");
+        builder.add_string_value (history_key);
+
+        builder.set_member_name ("server_index");
+        builder.add_int_value (server_index);
 
         builder.end_object ();
 

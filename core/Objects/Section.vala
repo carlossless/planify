@@ -236,6 +236,10 @@ public class Objects.Section : Objects.BaseObject {
                 Services.Todoist.get_default ().update.begin (this, (obj, res) => {
                     Services.Todoist.get_default ().update.end (res);
                 });
+            } else if (project.source_type == SourceType.THINGS && cloud) {
+                Services.Things.get_default ().update.begin (this, (obj, res) => {
+                    Services.Things.get_default ().update.end (res);
+                });
             } else if (project.source_type == SourceType.CALDAV && cloud) {
                 var caldav_client = Services.CalDAV.Core.get_default ().get_client (project.source);
                 caldav_client.add_section.begin (this, true, (obj, res) => {
@@ -418,6 +422,11 @@ public class Objects.Section : Objects.BaseObject {
                 if (project.source_type == SourceType.TODOIST) {
                     Services.Todoist.get_default ().delete.begin (this, (obj, res) => {
                         Services.Todoist.get_default ().delete.end (res);
+                        Services.Store.instance ().delete_section (this);
+                    });
+                } else if (project.source_type == SourceType.THINGS) {
+                    Services.Things.get_default ().delete.begin (this, (obj, res) => {
+                        Services.Things.get_default ().delete.end (res);
                         Services.Store.instance ().delete_section (this);
                     });
                 } else if (project.source_type == SourceType.CALDAV && ical_url != "") {

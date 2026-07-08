@@ -97,7 +97,8 @@ public enum SourceType {
     LOCAL,
     TODOIST,
     GOOGLE_TASKS,
-    CALDAV;
+    CALDAV,
+    THINGS;
 
     public string to_string () {
         switch (this) {
@@ -115,6 +116,9 @@ public enum SourceType {
 
             case CALDAV:
                 return "caldav";
+
+            case THINGS:
+                return "things";
 
             default:
                 assert_not_reached ();
@@ -134,6 +138,9 @@ public enum SourceType {
 
             case "caldav":
                 return SourceType.CALDAV;
+
+            case "things":
+                return SourceType.THINGS;
 
             default:
                 return SourceType.NONE;

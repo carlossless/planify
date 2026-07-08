@@ -283,6 +283,21 @@ public class Widgets.LabelsPickerCore : Adw.Bin {
                 is_loading = false;
                 search_entry.text = "";
             });
+        } else if (source.source_type == SourceType.THINGS) {
+            is_loading = true;
+            Services.Things.get_default ().add.begin (label, (obj, res) => {
+                HttpResponse response = Services.Things.get_default ().add.end (res);
+
+                if (response.status) {
+                    label.id = response.data;
+                    Services.Store.instance ().insert_label (label);
+                    checked_toggled (label, true);
+                }
+
+                close ();
+                is_loading = false;
+                search_entry.text = "";
+            });
         }
     }
 

@@ -800,6 +800,11 @@ public class Objects.Item : Objects.BaseObject {
                     Services.Todoist.get_default ().update.end (res);
                     Services.Store.instance ().update_item (this, update_id);
                 });
+            } else if (project.source_type == SourceType.THINGS) {
+                Services.Things.get_default ().update.begin (this, (obj, res) => {
+                    Services.Things.get_default ().update.end (res);
+                    Services.Store.instance ().update_item (this, update_id);
+                });
             } else if (project.source_type == SourceType.CALDAV) {
                 var caldav_client = Services.CalDAV.Core.get_default ().get_client (project.source);
                 caldav_client.add_item.begin (this, true, (obj, res) => {
@@ -835,6 +840,12 @@ public class Objects.Item : Objects.BaseObject {
                     Services.Store.instance ().update_item (this, update_id);
                     loading = false;
                 });
+            } else if (project.source_type == SourceType.THINGS) {
+                Services.Things.get_default ().update.begin (this, (obj, res) => {
+                    Services.Things.get_default ().update.end (res);
+                    Services.Store.instance ().update_item (this, update_id);
+                    loading = false;
+                });
             } else if (project.source_type == SourceType.CALDAV) {
                 var caldav_client = Services.CalDAV.Core.get_default ().get_client (project.source);
                 caldav_client.add_item.begin (this, true, (obj, res) => {
@@ -863,6 +874,12 @@ public class Objects.Item : Objects.BaseObject {
         } else if (project.source_type == SourceType.TODOIST) {
             Services.Todoist.get_default ().update.begin (this, (obj, res) => {
                 Services.Todoist.get_default ().update.end (res);
+                Services.Store.instance ().update_item (this, update_id);
+                loading = false;
+            });
+        } else if (project.source_type == SourceType.THINGS) {
+            Services.Things.get_default ().update.begin (this, (obj, res) => {
+                Services.Things.get_default ().update.end (res);
                 Services.Store.instance ().update_item (this, update_id);
                 loading = false;
             });
@@ -1589,6 +1606,18 @@ public class Objects.Item : Objects.BaseObject {
                     Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
                 }
             });
+        } else if (project.source_type == SourceType.THINGS) {
+            loading = true;
+            Services.Things.get_default ().delete.begin (this, (obj, res) => {
+                HttpResponse response = Services.Things.get_default ().delete.end (res);
+                loading = false;
+
+                if (response.status) {
+                    Services.Store.instance ().delete_item (this);
+                } else {
+                    Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
+                }
+            });
         } else if (project.source_type == SourceType.CALDAV) {
             delete_caldav.begin ();
         }
@@ -1731,6 +1760,15 @@ public class Objects.Item : Objects.BaseObject {
             } else {
                 return null;
             }
+        } else if (project.source_type == SourceType.THINGS) {
+            loading = true;
+            var response = yield Services.Things.get_default ().update (this);
+            loading = false;
+            if (response.status) {
+                Services.Store.instance ().update_item (this);
+            } else {
+                return null;
+            }
         } else if (project.source_type == SourceType.CALDAV) {
             loading = true;
             var caldav_client = Services.CalDAV.Core.get_default ().get_client (project.source);
@@ -1749,6 +1787,28 @@ public class Objects.Item : Objects.BaseObject {
     public void move (Objects.Project project, string _section_id, bool notify = true) {
         if (project.source_type == SourceType.LOCAL) {
             _move (project.id, _section_id, notify);
+        } else if (project.source_type == SourceType.THINGS) {
+            loading = true;
+            sensitive = false;
+
+            string move_id = project.id;
+            string move_type = "project_id";
+            if (_section_id != "") {
+                move_type = "section_id";
+                move_id = _section_id;
+            }
+
+            Services.Things.get_default ().move_item.begin (this, move_type, move_id, (obj, res) => {
+                var response = Services.Things.get_default ().move_item.end (res);
+                loading = false;
+                sensitive = true;
+
+                if (response.status) {
+                    _move (project.id, _section_id, notify);
+                } else {
+                    Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
+                }
+            });
         } else if (project.source_type == SourceType.TODOIST) {
             loading = true;
             sensitive = false;
@@ -1984,6 +2044,8 @@ public class Objects.Item : Objects.BaseObject {
 
         if (project.source_type == SourceType.TODOIST) {
             response = yield Services.Todoist.get_default ().complete_item (this);
+        } else if (project.source_type == SourceType.THINGS) {
+            response = yield Services.Things.get_default ().complete_item (this);
         } else {
             var caldav_client = Services.CalDAV.Core.get_default ().get_client (project.source);
             response = yield caldav_client.complete_item (this);

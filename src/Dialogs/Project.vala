@@ -439,6 +439,8 @@ public class Dialogs.Project : Adw.Dialog {
 
         if (project.source_type == SourceType.TODOIST) {
             response = yield Services.Todoist.get_default ().update (project);
+        } else if (project.source_type == SourceType.THINGS) {
+            response = yield Services.Things.get_default ().update (project);
         } else if (project.source_type == SourceType.CALDAV) {
             var caldav_client = Services.CalDAV.Core.get_default ().get_client (project.source);
             response = yield caldav_client.update_project (project);
@@ -466,6 +468,19 @@ public class Dialogs.Project : Adw.Dialog {
         } else if (project.source_type == SourceType.TODOIST) {
             Services.Todoist.get_default ().add.begin (project, (obj, res) => {
                 HttpResponse response = Services.Todoist.get_default ().add.end (res);
+
+                if (response.status) {
+                    project.id = response.data;
+                    Services.Store.instance ().insert_project (project);
+                    go_project (project.id);
+                } else {
+                    Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
+                    close ();
+                }
+            });
+        } else if (project.source_type == SourceType.THINGS) {
+            Services.Things.get_default ().add.begin (project, (obj, res) => {
+                HttpResponse response = Services.Things.get_default ().add.end (res);
 
                 if (response.status) {
                     project.id = response.data;

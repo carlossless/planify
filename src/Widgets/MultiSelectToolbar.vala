@@ -182,10 +182,11 @@ public class Widgets.MultiSelectToolbar : Adw.Bin {
     }
 
     private void update_items (Gee.ArrayList<Objects.Item> objects) {
-        if (project.source_type == SourceType.LOCAL || project.source_type == SourceType.CALDAV) {
+        if (project.source_type == SourceType.LOCAL || project.source_type == SourceType.CALDAV ||
+            project.source_type == SourceType.THINGS) {
             foreach (Objects.Item item in objects) {
                 item.update_async ("");
-            }            
+            }
         } else if (project.source_type == SourceType.TODOIST) {
             done_button.is_loading = true;
             Services.Todoist.get_default ().update_items.begin (objects, (obj, res) => {

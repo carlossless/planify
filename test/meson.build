@@ -24,3 +24,12 @@ test_cli = executable(
 )
 
 test('cli', test_cli, timeout: 30, suite: ['cli'])
+
+test_things_protocol = executable(
+    'test-things-protocol',
+    'test-things-protocol.vala',
+    dependencies: [ core_dep, glib_dep, json_dep ],
+    install: false
+)
+
+test('things-protocol', test_things_protocol, timeout: 30, suite: ['things-protocol'])

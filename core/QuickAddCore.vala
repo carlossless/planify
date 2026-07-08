@@ -827,6 +827,23 @@ public class Layouts.QuickAddCore : Adw.Bin {
             return;
         }
 
+        if (item.project.source_type == SourceType.THINGS) {
+            is_loading = true;
+            Services.Things.get_default ().add.begin (item, (obj, res) => {
+                HttpResponse response = Services.Things.get_default ().add.end (res);
+                is_loading = false;
+
+                if (response.status) {
+                    item.id = response.data;
+                    _add_item (item);
+                } else {
+                    error (response);
+                }
+            });
+
+            return;
+        }
+
         if (item.project.source_type == SourceType.CALDAV) {
             is_loading = true;
             item.id = Util.get_default ().generate_id ();

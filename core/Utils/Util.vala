@@ -422,7 +422,17 @@ public class Util : GLib.Object {
 
     private Gtk.MediaFile? _audio_media = null;
 
+    // Set while a backend is replaying a bulk history sync so hundreds of
+    // sync-applied completions don't each spawn a GStreamer pipeline (which
+    // exhausts file descriptors and kills the app). User-initiated
+    // completions still play normally.
+    public bool suppress_completion_sound { get; set; default = false; }
+
     public void play_audio () {
+        if (suppress_completion_sound) {
+            return;
+        }
+
         Services.LogService.get_default ().info ("Audio", "Playing task completion sound");
         _audio_media = Gtk.MediaFile.for_resource ("/io/github/alainm23/planify/success.ogg");
         _audio_media.loop = false;
@@ -430,7 +440,7 @@ public class Util : GLib.Object {
             _audio_media = null;
         });
         _audio_media.play ();
-    }    
+    }
 
     public bool is_input_valid (Gtk.Entry entry) {
         return entry.get_text_length () > 0;

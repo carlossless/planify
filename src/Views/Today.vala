@@ -721,6 +721,7 @@ public class Views.Today : Adw.Bin {
         var sorted_by_item = new Widgets.ContextMenu.MenuPicker (_ ("Sorting"), "vertical-arrows-long-symbolic") {
             selected = Services.Settings.get_default ().settings.get_string ("today-sort-order")
         };
+        sorted_by_item.add_item (_("Manual"), SortedByType.MANUAL.to_string ());
         sorted_by_item.add_item (_("Alphabetically"), SortedByType.NAME.to_string ());
         sorted_by_item.add_item (_("Due Date"), SortedByType.DUE_DATE.to_string ());
         sorted_by_item.add_item (_("Date Added"), SortedByType.ADDED_DATE.to_string ());
@@ -870,6 +871,13 @@ public class Views.Today : Adw.Bin {
         Objects.Item item2 = ((Layouts.ItemRow) lbbefore).item;
 
         SortedByType sorted_by = SortedByType.parse (Services.Settings.get_default ().settings.get_string ("today-sort-order"));
+
+        // In the Today view "Manual" follows the per-day hand-ordering
+        // (day_order), which mirrors Things' dedicated today-index — not the
+        // project child_order that the generic manual sort uses.
+        if (sorted_by == SortedByType.MANUAL) {
+            return item1.day_order - item2.day_order;
+        }
 
         return Util.get_default ().set_item_sort_func (
             item1,

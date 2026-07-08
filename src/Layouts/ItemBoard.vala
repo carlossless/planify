@@ -24,6 +24,9 @@ public class Layouts.ItemBoard : Layouts.ItemBase {
     private Gtk.Revealer motion_top_revealer;
 
     private Gtk.CheckButton checked_button;
+    // Guards the checkbox's toggled signal against firing the completion path
+    // when we refresh it from the model (e.g. during a sync); see ItemRow.
+    private bool syncing_checked_state = false;
     private Gtk.Revealer checked_button_revealer;
     private Gtk.Label content_label;
     private Gtk.Box content_box;
@@ -373,7 +376,7 @@ public class Layouts.ItemBoard : Layouts.ItemBase {
         })] = checked_button_gesture;
 
         signals_map[checked_button.toggled.connect (() => {
-            if (!checked_button_gesture.is_active ()) {
+            if (!checked_button_gesture.is_active () && !syncing_checked_state) {
                 checked_toggled (checked_button.active);
             }
         })] = checked_button;
@@ -628,7 +631,9 @@ public class Layouts.ItemBoard : Layouts.ItemBase {
     public override void update_request () {
         if (complete_timeout <= 0) {
             Util.get_default ().set_widget_priority (item.priority, checked_button);
+            syncing_checked_state = true;
             checked_button.active = item.completed;
+            syncing_checked_state = false;
         }
 
         content_label.label = MarkdownProcessor.get_default ().markup_string (item.content);

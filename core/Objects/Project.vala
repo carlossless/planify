@@ -459,6 +459,16 @@ public class Objects.Project : Objects.BaseObject {
                     Services.Store.instance ().update_project (this);
                     loading = false;
                 });
+            } else if (backend_type == SourceType.THINGS) {
+                if (show_loading) {
+                    loading = true;
+                }
+
+                Services.Things.get_default ().update.begin (this, (obj, res) => {
+                    Services.Things.get_default ().update.end (res);
+                    Services.Store.instance ().update_project (this);
+                    loading = false;
+                });
             } else if (backend_type == SourceType.CALDAV) {
                 if (show_loading) {
                     loading = true;
@@ -901,9 +911,17 @@ public class Objects.Project : Objects.BaseObject {
 
         if (source_type == SourceType.TODOIST) {
             delete_from_todoist ();
+        } else if (source_type == SourceType.THINGS) {
+            delete_from_things ();
         } else if (source_type == SourceType.CALDAV) {
             delete_from_caldav ();
         }
+    }
+
+    private void delete_from_things () {
+        Services.Things.get_default ().delete.begin (this, (obj, res) => {
+            handle_remote_delete_response (Services.Things.get_default ().delete.end (res));
+        });
     }
 
     private void delete_from_todoist () {

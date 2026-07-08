@@ -31,6 +31,10 @@ public class Layouts.ItemRow : Layouts.ItemBase {
 
     private Gtk.CheckButton checked_button;
     private Gtk.Revealer checked_button_revealer;
+    // Set while we refresh the checkbox from the model (e.g. a sync applied a
+    // remote completion). Guards against the checkbox's toggled signal firing
+    // the "user completed this" path and echoing the change back to the server.
+    private bool syncing_checked_state = false;
     private Widgets.TextView content_textview;
     private Gtk.Revealer hide_loading_revealer;
     private Gtk.Label project_name_label;
@@ -766,8 +770,10 @@ public class Layouts.ItemRow : Layouts.ItemBase {
         })] = checked_button_gesture;
 
         signals_map[checked_button.toggled.connect (() => {
-            // Only handle keyboard activation (Enter) — click is handled by GestureClick
-            if (!checked_button_gesture.is_active ()) {
+            // Only handle keyboard activation (Enter) — click is handled by
+            // GestureClick, and a programmatic refresh from the model must be
+            // ignored so it isn't pushed back to the backend.
+            if (!checked_button_gesture.is_active () && !syncing_checked_state) {
                 checked_toggled (checked_button.active);
             }
         })] = checked_button;
@@ -1003,7 +1009,9 @@ public class Layouts.ItemRow : Layouts.ItemBase {
     public override void update_request () {
         if (complete_timeout <= 0) {
             Util.get_default ().set_widget_priority (item.priority, checked_button);
+            syncing_checked_state = true;
             checked_button.active = item.completed;
+            syncing_checked_state = false;
 
             if (item.completed && Services.Settings.get_default ().settings.get_boolean ("underline-completed-tasks")) {
                 content_label.add_css_class ("line-through");
@@ -1757,6 +1765,17 @@ public class Layouts.ItemRow : Layouts.ItemBase {
                         Services.EventBus.get_default ().item_moved (picked_item, old_project_id, old_section_id, old_parent_id);
                     }
                 });
+            } else if (picked_item.project.source_type == SourceType.THINGS) {
+                Services.Things.get_default ().move_item.begin (picked_item, "parent_id", picked_item.parent_id, (obj, res) => {
+                    var response = Services.Things.get_default ().move_item.end (res);
+                    if (response.status) {
+                        target_item.collapsed = true;
+                        Services.Store.instance ().update_item (picked_widget.item);
+                        Services.EventBus.get_default ().item_moved (picked_item, old_project_id, old_section_id, old_parent_id);
+                    } else {
+                        Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
+                    }
+                });
             } else if (picked_item.project.source_type == SourceType.CALDAV) {
                 var caldav_client = Services.CalDAV.Core.get_default ().get_client (picked_item.project.source);
                 caldav_client.add_item.begin (picked_item, true, (obj, res) => {
@@ -1872,6 +1891,28 @@ public class Layouts.ItemRow : Layouts.ItemBase {
                     Services.Todoist.get_default ().move_item.begin (picked_widget.item, move_type, move_id, (obj, res) => {
                         if (Services.Todoist.get_default ().move_item.end (res).status) {
                             Services.Store.instance ().move_item (picked_widget.item, old_project_id, old_section_id, old_parent_id);
+                        }
+                    });
+                } else if (picked_widget.item.project.source_type == SourceType.THINGS) {
+                    string move_id = picked_widget.item.project_id;
+                    string move_type = "project_id";
+
+                    if (picked_widget.item.section_id != "") {
+                        move_id = picked_widget.item.section_id;
+                        move_type = "section_id";
+                    }
+
+                    if (picked_widget.item.has_parent) {
+                        move_id = picked_widget.item.parent_id;
+                        move_type = "parent_id";
+                    }
+
+                    Services.Things.get_default ().move_item.begin (picked_widget.item, move_type, move_id, (obj, res) => {
+                        var response = Services.Things.get_default ().move_item.end (res);
+                        if (response.status) {
+                            Services.Store.instance ().move_item (picked_widget.item, old_project_id, old_section_id, old_parent_id);
+                        } else {
+                            Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
                         }
                     });
                 } else if (picked_widget.item.project.source_type == SourceType.CALDAV) {

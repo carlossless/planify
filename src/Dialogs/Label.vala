@@ -197,6 +197,25 @@ public class Dialogs.Label : Adw.Dialog {
                 }
             });
         }
+
+        if (label.source_type == SourceType.THINGS) {
+            submit_button.is_loading = true;
+            Services.Things.get_default ().update.begin (label, (obj, res) => {
+                submit_button.is_loading = false;
+                HttpResponse response = Services.Things.get_default ().update.end (res);
+
+                if (response.status) {
+                    Services.Store.instance ().update_label (label);
+                    close ();
+                } else {
+                    label.name = _name;
+                    label.color = _color;
+
+                    Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
+                    close ();
+                }
+            });
+        }
     }
 
     private void add_label () {
@@ -214,6 +233,23 @@ public class Dialogs.Label : Adw.Dialog {
             Services.Todoist.get_default ().add.begin (label, (obj, res) => {
                 submit_button.is_loading = false;
                 HttpResponse response = Services.Todoist.get_default ().add.end (res);
+
+                if (response.status) {
+                    label.id = response.data;
+                    Services.Store.instance ().insert_label (label);
+                    close ();
+                } else {
+                    Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
+                    close ();
+                }
+            });
+        }
+
+        if (label.source_type == SourceType.THINGS) {
+            submit_button.is_loading = true;
+            Services.Things.get_default ().add.begin (label, (obj, res) => {
+                submit_button.is_loading = false;
+                HttpResponse response = Services.Things.get_default ().add.end (res);
 
                 if (response.status) {
                     label.id = response.data;

@@ -293,6 +293,22 @@ public class Widgets.ProjectPicker.ProjectPickerButton : Adw.Bin {
                 }
             });
         }
+
+        if (section.project.source_type == SourceType.THINGS) {
+            spinner_revealer.reveal_child = true;
+            Services.Things.get_default ().add.begin (section, (obj, res) => {
+                spinner_revealer.reveal_child = false;
+                HttpResponse response = Services.Things.get_default ().add.end (res);
+
+                if (response.status) {
+                    section.id = response.data;
+                    section.project.add_section_if_not_exists (section);
+                    _add_assign_section (section);
+                } else {
+                    Services.EventBus.get_default ().send_error_toast (response.error_code, response.error);
+                }
+            });
+        }
     }
 
     private void _add_assign_section (Objects.Section section) {
