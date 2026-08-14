@@ -73,6 +73,13 @@ public class Services.Things : GLib.Object {
 
     public Things () {
         session = new Soup.Session ();
+
+        // A sync that hangs mid-history never stores its cursor, so the next
+        // launch starts over from the beginning. Bound the wait instead and
+        // let the sync report failure and retry.
+        session.timeout = 60;
+        session.idle_timeout = 60;
+
         queue = new ThingsQueue (session, this);
     }
 
@@ -230,7 +237,13 @@ public class Services.Things : GLib.Object {
             set_common_headers (message);
 
             try {
-                GLib.Bytes stream = yield session.send_and_read_async (message, GLib.Priority.LOW, null);
+                // Not Priority.LOW. GLib dispatches only the highest priority
+                // among the sources that are ready, so a LOW (300) request
+                // never starts while any DEFAULT-priority timer is ready on
+                // every iteration — the page after the first would hang, the
+                // cursor would never be stored, and the next launch would
+                // replay the entire history again.
+                GLib.Bytes stream = yield session.send_and_read_async (message, GLib.Priority.DEFAULT, null);
 
                 if (message.status_code != 200) {
                     Services.LogService.get_default ().error (
@@ -267,6 +280,12 @@ public class Services.Things : GLib.Object {
                 int64 head = ThingsUtil.get_int_or (root, "current-item-index", index);
                 index += page_count;
 
+                Services.LogService.get_default ().info (
+                    "Things", "Applied %u history entries, cursor %s of %s".printf (
+                        page_count, index.to_string (), head.to_string ()
+                    )
+                );
+
                 int64 end_size = ThingsUtil.get_int_or (root, "end-total-content-size", 0);
                 int64 latest_size = ThingsUtil.get_int_or (root, "latest-total-content-size", 0);
                 sync_progress (end_size, latest_size, _("Downloading tasks…"));
@@ -297,6 +316,10 @@ public class Services.Things : GLib.Object {
         }
 
         source.save ();
+
+        Services.LogService.get_default ().info (
+            "Things", "Sync %s at cursor %s".printf (had_error ? "failed" : "finished", index.to_string ())
+        );
 
         if (had_error) {
             source.sync_failed ();
@@ -551,6 +574,15 @@ public class Services.Things : GLib.Object {
             builder.add_null_value ();
         }
 
+        // Things.app pairs every completion with st=1. Instances of repeating
+        // tasks sit in Someday (st=2) until their day arrives, and a completed
+        // task left there stays invisible in every list; moving it back to
+        // Anytime is what makes it show up in the Logbook.
+        if (item.checked) {
+            builder.set_member_name ("st");
+            builder.add_int_value (ThingsUtil.START_ANYTIME);
+        }
+
         add_md (builder);
         ThingsUtil.end_entity (builder);
         builder.end_object ();
@@ -614,7 +646,10 @@ public class Services.Things : GLib.Object {
         var builder = new Json.Builder ();
         builder.begin_object ();
         ThingsUtil.begin_entity (builder, item.id, 1, write_kind (item));
-        add_task_placement (builder, source, project_id, section_id, item.due.date, item.deadline_date);
+        add_task_placement (
+            builder, source, project_id, section_id,
+            item.due.date, item.deadline_date, is_recurring_due (item.due)
+        );
         add_md (builder);
         ThingsUtil.end_entity (builder);
         builder.end_object ();
@@ -651,12 +686,12 @@ public class Services.Things : GLib.Object {
             ThingsUtil.begin_entity (builder, uuid, 0, KIND_CHECKLIST);
             add_checklist_fields (builder, item, true);
             ThingsUtil.end_entity (builder);
-            item.extra_data = build_extra_data (KIND_CHECKLIST, false);
+            item.extra_data = build_extra_data (KIND_CHECKLIST, false, false, false);
         } else {
             ThingsUtil.begin_entity (builder, uuid, 0, KIND_TASK);
             add_task_fields (builder, source, item, true);
             ThingsUtil.end_entity (builder);
-            item.extra_data = build_extra_data (KIND_TASK, false);
+            item.extra_data = build_extra_data (KIND_TASK, is_recurring_due (item.due), false, false);
         }
 
         builder.end_object ();
@@ -714,7 +749,10 @@ public class Services.Things : GLib.Object {
             builder.add_null_value ();
         }
 
-        add_task_placement (builder, source, item.project_id, item.section_id, item.due.date, item.deadline_date);
+        add_task_placement (
+            builder, source, item.project_id, item.section_id,
+            item.due.date, item.deadline_date, is_recurring_due (item.due)
+        );
 
         string[] tags = {};
         foreach (Objects.Label label in item.labels) {
@@ -729,13 +767,87 @@ public class Services.Things : GLib.Object {
         builder.set_member_name ("ti");
         builder.add_int_value (item.day_order);
 
+        // Things has no evening flag in Planify's model, so it survives a round
+        // trip only by being echoed back from what the last sync recorded.
+        builder.set_member_name ("sb");
+        builder.add_int_value (is_evening_item (item) ? ThingsUtil.BUCKET_EVENING : ThingsUtil.BUCKET_DAY);
+
+        add_reminder_field (builder, item);
+        add_recurrence_fields (builder, item, create);
+
         if (create) {
             builder.set_member_name ("tp");
             builder.add_int_value (ThingsUtil.TYPE_TASK);
 
-            add_create_defaults (builder);
+            add_create_defaults (builder, false, false);
         } else {
             add_md (builder);
+        }
+    }
+
+    /*
+     * "ato" is the reminder as seconds after midnight on the scheduled day.
+     * Planify allows several reminders and relative ones; Things has room for
+     * a single absolute time, so the earliest absolute reminder wins and the
+     * rest stay Planify-only.
+     */
+    private void add_reminder_field (Json.Builder builder, Objects.Item item) {
+        int64 earliest = -1;
+
+        foreach (Objects.Reminder reminder in item.reminders) {
+            if (reminder.reminder_type != ReminderType.ABSOLUTE) {
+                continue;
+            }
+
+            GLib.DateTime ? datetime = reminder.due.datetime;
+            if (datetime == null) {
+                continue;
+            }
+
+            int64 seconds = ThingsUtil.seconds_after_midnight (datetime);
+            if (earliest < 0 || seconds < earliest) {
+                earliest = seconds;
+            }
+        }
+
+        builder.set_member_name ("ato");
+        if (earliest >= 0 && item.due.date != "") {
+            builder.add_int_value (earliest);
+        } else {
+            builder.add_null_value ();
+        }
+    }
+
+    /*
+     * A Things task that carries a repeat rule is a template: Things hides it
+     * and expands it into dated instances. "icsd" is the date the expander
+     * should start generating from, and "icc" counts what it has produced —
+     * a fresh series starts at zero from the first scheduled day.
+     */
+    private void add_recurrence_fields (Json.Builder builder, Objects.Item item, bool create) {
+        int64 series_start = ThingsUtil.date_string_to_day_epoch (item.due.date);
+        if (series_start < 0) {
+            series_start = ThingsUtil.today_day_epoch ();
+        }
+
+        ThingsUtil.add_recurrence (builder, item.due, series_start);
+
+        // The expander's counters belong to Things. Touch them only when this
+        // write actually defines a series — resending icc on an unrelated edit
+        // would rewind the count of instances Things has already produced.
+        bool recurring = is_recurring_due (item.due);
+        if (!create && !recurring) {
+            return;
+        }
+
+        builder.set_member_name ("icc");
+        builder.add_int_value (0);
+
+        builder.set_member_name ("icsd");
+        if (recurring) {
+            builder.add_int_value (series_start);
+        } else {
+            builder.add_null_value ();
         }
     }
 
@@ -780,7 +892,8 @@ public class Services.Things : GLib.Object {
      */
     private void add_task_placement (Json.Builder builder, Objects.Source source,
                                      string project_id, string section_id,
-                                     string due_date, string deadline_date) {
+                                     string due_date, string deadline_date,
+                                     bool recurring = false) {
         string[] pr = {};
         string[] ar = {};
         string[] agr = {};
@@ -803,7 +916,11 @@ public class Services.Things : GLib.Object {
 
         int64 scheduled = ThingsUtil.date_string_to_day_epoch (due_date);
         int start;
-        if (scheduled >= 0) {
+        if (recurring) {
+            // A repeat rule makes this the series template, which Things keeps
+            // out of every dated list: st=2 with no scheduled date of its own.
+            start = ThingsUtil.START_SOMEDAY;
+        } else if (scheduled >= 0) {
             start = scheduled > ThingsUtil.today_day_epoch () ? ThingsUtil.START_SOMEDAY : ThingsUtil.START_ANYTIME;
         } else if (in_inbox) {
             start = ThingsUtil.START_INBOX;
@@ -819,7 +936,7 @@ public class Services.Things : GLib.Object {
         builder.add_int_value (start);
 
         builder.set_member_name ("sr");
-        if (scheduled >= 0) {
+        if (scheduled >= 0 && !recurring) {
             builder.add_int_value (scheduled);
         } else {
             builder.add_null_value ();
@@ -922,6 +1039,20 @@ public class Services.Things : GLib.Object {
 
         builder.set_member_name ("ix");
         builder.add_int_value (project.child_order);
+
+        if (!create) {
+            // Things has no archive flag; a finished project is one whose
+            // status is completed, which is what takes it out of the sidebar.
+            builder.set_member_name ("ss");
+            builder.add_int_value (project.is_archived ? ThingsUtil.STATUS_COMPLETED : ThingsUtil.STATUS_OPEN);
+
+            builder.set_member_name ("sp");
+            if (project.is_archived) {
+                builder.add_double_value (ThingsUtil.now_epoch ());
+            } else {
+                builder.add_null_value ();
+            }
+        }
 
         if (create) {
             builder.set_member_name ("tp");
@@ -1093,17 +1224,35 @@ public class Services.Things : GLib.Object {
      * Shared payload fragments
      */
 
-    private void add_create_defaults (Json.Builder builder, bool is_project = false) {
+    /*
+     * The fields every newly created Task6 carries. "schedule_fields" covers
+     * the ones add_task_fields writes from the item itself (repeat rule,
+     * reminder, evening bucket, Today index); sections and projects have no
+     * such state, so they take the neutral values from here instead. Writing
+     * a member twice would emit it twice and let the server keep whichever
+     * copy it parsed last, so exactly one side must own each.
+     */
+    private void add_create_defaults (Json.Builder builder, bool is_project = false,
+                                      bool schedule_fields = true) {
         ThingsUtil.add_string_array (builder, "rt", {});
         ThingsUtil.add_string_array (builder, "dl", {});
 
-        builder.set_member_name ("ti");
-        builder.add_int_value (0);
+        if (schedule_fields) {
+            builder.set_member_name ("ti");
+            builder.add_int_value (0);
+            builder.set_member_name ("sb");
+            builder.add_int_value (ThingsUtil.BUCKET_DAY);
+            builder.set_member_name ("rr");
+            builder.add_null_value ();
+            builder.set_member_name ("ato");
+            builder.add_null_value ();
+            builder.set_member_name ("icc");
+            builder.add_int_value (0);
+            builder.set_member_name ("icsd");
+            builder.add_null_value ();
+        }
+
         builder.set_member_name ("do");
-        builder.add_int_value (0);
-        builder.set_member_name ("sb");
-        builder.add_int_value (0);
-        builder.set_member_name ("icc");
         builder.add_int_value (0);
         builder.set_member_name ("icp");
         builder.add_boolean_value (is_project);
@@ -1111,21 +1260,15 @@ public class Services.Things : GLib.Object {
         builder.add_boolean_value (false);
         builder.set_member_name ("tr");
         builder.add_boolean_value (false);
-        builder.set_member_name ("rr");
-        builder.add_null_value ();
         builder.set_member_name ("rmd");
         builder.add_null_value ();
         builder.set_member_name ("rp");
-        builder.add_null_value ();
-        builder.set_member_name ("ato");
         builder.add_null_value ();
         builder.set_member_name ("lai");
         builder.add_null_value ();
         builder.set_member_name ("dds");
         builder.add_null_value ();
         builder.set_member_name ("acrd");
-        builder.add_null_value ();
-        builder.set_member_name ("icsd");
         builder.add_null_value ();
 
         add_xx (builder);
@@ -1170,18 +1313,28 @@ public class Services.Things : GLib.Object {
     }
 
     /*
-     * Per-item Things metadata, persisted in Objects.Item.extra_data as
-     * {"things_kind": "...", "things_recurring": bool}. Preserving the exact
-     * entity kind Things assigned to each item is critical: older items are
-     * stored as Task3/Task4 with hyphenated UUIDs, and their read path does
-     * NOT Base58-decode the key. Writing a newer Task6 for such a UUID makes
-     * Things Base58-decode a hyphenated string and crash. So we always write
-     * back the kind we received, never an upgraded one.
+     * Per-item Things metadata, persisted in Objects.Item.extra_data.
+     *
+     * things_kind: the exact entity kind Things assigned to this item.
+     * Preserving it is critical: older items are stored as Task3/Task4 with
+     * hyphenated UUIDs, and their read path does NOT Base58-decode the key.
+     * Writing a newer Task6 for such a UUID makes Things Base58-decode a
+     * hyphenated string and crash. So we always write back the kind we
+     * received, never an upgraded one.
+     *
+     * things_template: this item carries a recurrence rule ("rr"), i.e. it is
+     * the hidden series definition that Things expands into instances.
+     * things_instance: this item was generated from a template ("rt").
+     * things_evening: Things' evening bucket ("sb"), which Planify's model has
+     * no field for but must not silently drop on a round trip.
      */
 
-    private string build_extra_data (string kind, bool recurring) {
-        return "{\"things_kind\": \"%s\", \"things_recurring\": %s}".printf (
-            kind, recurring ? "true" : "false"
+    private string build_extra_data (string kind, bool template, bool instance, bool evening) {
+        return "{\"things_kind\": \"%s\", \"things_template\": %s, \"things_instance\": %s, \"things_evening\": %s}".printf (
+            kind,
+            template ? "true" : "false",
+            instance ? "true" : "false",
+            evening ? "true" : "false"
         );
     }
 
@@ -1192,8 +1345,22 @@ public class Services.Things : GLib.Object {
         return "";
     }
 
-    private bool is_recurring_item (Objects.Item item) {
-        return item.extra_data != "" && Utils.JsonUtils.get_bool (item.extra_data, "things_recurring");
+    private bool stored_flag (Objects.Item item, string member) {
+        return item.extra_data != "" && Utils.JsonUtils.get_bool (item.extra_data, member);
+    }
+
+    // The hidden series definition. Editing one means regenerating every
+    // instance Things derived from it, which only Things.app knows how to do.
+    private bool is_recurrence_template (Objects.Item item) {
+        return stored_flag (item, "things_template");
+    }
+
+    private bool is_evening_item (Objects.Item item) {
+        return stored_flag (item, "things_evening");
+    }
+
+    private bool is_recurring_due (Objects.DueDate due) {
+        return due.is_recurring && due.recurrency_type != RecurrencyType.NONE;
     }
 
     private bool is_checklist_item (Objects.Item item) {
@@ -1217,14 +1384,20 @@ public class Services.Things : GLib.Object {
 
     /*
      * Gate every write to an item. Refuses operations that would corrupt the
-     * Things account: repeating tasks (a bare completion breaks the recurrence
-     * chain) and legacy items whose kind we never captured (writing Task6 for
-     * a non-Base58 UUID crashes Things). Returns null when the write is safe.
+     * Things account: recurrence templates (changing the rule means Things has
+     * to regenerate the whole instance chain) and legacy items whose kind we
+     * never captured (writing Task6 for a non-Base58 UUID crashes Things).
+     *
+     * Instances of repeating tasks are deliberately NOT blocked. Things.app
+     * completes one with a plain {st, sp, ss, md} status commit, exactly like
+     * any other task; the template's own bookkeeping (icc/icsd) is advanced
+     * separately by whichever client next expands the series. Refusing them
+     * would make every repeating task read-only in Planify for no gain.
      */
     private HttpResponse ? ensure_item_writable (Objects.Item item) {
-        if (is_recurring_item (item)) {
+        if (is_recurrence_template (item)) {
             return not_supported (
-                _("Planify can’t safely change repeating Things tasks yet — please do it in Things.")
+                _("This is a repeating task’s schedule — change how it repeats in Things.")
             );
         }
 
@@ -1267,8 +1440,29 @@ public class Services.Things : GLib.Object {
 
     private void apply_task (Objects.Source source, string uuid, int operation, Json.Object payload, string kind) {
         if (operation == 2) {
+            forget_template (source, uuid);
             delete_any (uuid);
             return;
+        }
+
+        // A task that carries a repeat rule is the series template. Things
+        // never shows it — the dated instances it spawns are the real tasks —
+        // so record the rule and keep the template out of Planify entirely.
+        if (payload.has_member ("rr") && !ThingsUtil.is_null_member (payload, "rr")) {
+            remember_template (source, uuid, payload.get_object_member ("rr"));
+            delete_any (uuid);
+            return;
+        }
+
+        if (is_known_template (source, uuid)) {
+            // Bookkeeping updates (icc/icsd) keep arriving for templates. If
+            // the rule was cleared the series is over and it becomes an
+            // ordinary task again; otherwise there is nothing to show.
+            if (payload.has_member ("rr")) {
+                forget_template (source, uuid);
+            } else {
+                return;
+            }
         }
 
         Objects.Item ? item = Services.Store.instance ().get_item (uuid);
@@ -1309,6 +1503,7 @@ public class Services.Things : GLib.Object {
         apply_item_fields (source, item, payload, kind);
 
         insert_item (source, item);
+        apply_reminder (item, payload);
     }
 
     private void patch_item (Objects.Source source, Objects.Item item, Json.Object payload, string kind) {
@@ -1324,6 +1519,7 @@ public class Services.Things : GLib.Object {
 
         apply_item_fields (source, item, payload, kind);
         Services.Store.instance ().update_item (item);
+        apply_reminder (item, payload);
 
         if (old_project_id != item.project_id || old_section_id != item.section_id ||
             old_parent_id != item.parent_id) {
@@ -1336,18 +1532,28 @@ public class Services.Things : GLib.Object {
     }
 
     private void apply_item_fields (Objects.Source source, Objects.Item item, Json.Object payload, string kind) {
-        // Remember the exact entity kind Things uses for this item and whether
-        // it repeats, so writes stay in the right format and skip recurring
-        // tasks. Recurrence fields only appear on some updates, so preserve a
-        // previously-seen recurring flag when the current payload omits them.
-        bool recurring = is_recurring_item (item);
-        if (payload.has_member ("rr") && !ThingsUtil.is_null_member (payload, "rr")) {
-            recurring = true;
+        // Remember the exact entity kind Things uses for this item, plus the
+        // flags writes have to respect. History entries are partial diffs, so
+        // a field the payload omits keeps whatever we already knew.
+        bool template = is_recurrence_template (item);
+        bool instance = stored_flag (item, "things_instance");
+        bool evening = is_evening_item (item);
+
+        if (payload.has_member ("rr")) {
+            template = !ThingsUtil.is_null_member (payload, "rr");
         }
-        if (ThingsUtil.parse_string_array (payload, "rt").length > 0) {
-            recurring = true;
+        if (payload.has_member ("rt")) {
+            instance = ThingsUtil.parse_string_array (payload, "rt").length > 0;
         }
-        item.extra_data = build_extra_data (kind, recurring);
+        if (payload.has_member ("sb")) {
+            evening = ThingsUtil.get_int_or (payload, "sb", ThingsUtil.BUCKET_DAY) == ThingsUtil.BUCKET_EVENING;
+        }
+
+        item.extra_data = build_extra_data (kind, template, instance, evening);
+
+        if (payload.has_member ("rt")) {
+            apply_instance_recurrence (source, item, ThingsUtil.parse_string_array (payload, "rt"));
+        }
 
         if (payload.has_member ("tt")) {
             item.content = payload.get_string_member ("tt");
@@ -1444,6 +1650,52 @@ public class Services.Things : GLib.Object {
         }
     }
 
+    /*
+     * Things stores a reminder as "ato": seconds after midnight on the task's
+     * scheduled day, so it only becomes an absolute time once "sr" is known.
+     * Planify keeps reminders as separate rows, hence this runs after the item
+     * itself is in the store.
+     */
+    private void apply_reminder (Objects.Item item, Json.Object payload) {
+        if (!payload.has_member ("ato")) {
+            return;
+        }
+
+        foreach (Objects.Reminder existing in item.reminders) {
+            if (existing.reminder_type == ReminderType.ABSOLUTE) {
+                Services.Store.instance ().delete_reminder (existing);
+            }
+        }
+
+        if (ThingsUtil.is_null_member (payload, "ato") || item.due.date == "" || item.checked) {
+            return;
+        }
+
+        string datetime = ThingsUtil.reminder_datetime_string (
+            item.due.date, ThingsUtil.get_int_or (payload, "ato", 0)
+        );
+        if (datetime == "") {
+            return;
+        }
+
+        // Only reminders that have yet to fire. A history replay walks over
+        // years of already-past reminders, and Planify notifies immediately
+        // for any reminder whose time has gone — which would mean a burst of
+        // urgent notifications for tasks finished long ago.
+        var parsed = new GLib.DateTime.from_iso8601 (datetime, new GLib.TimeZone.local ());
+        if (parsed == null || parsed.compare (new GLib.DateTime.now_local ()) <= 0) {
+            return;
+        }
+
+        var reminder = new Objects.Reminder ();
+        reminder.item_id = item.id;
+        reminder.reminder_type = ReminderType.ABSOLUTE;
+        reminder.due.date = datetime;
+        reminder.id = Util.get_default ().generate_id (reminder);
+
+        item.add_reminder_if_not_exists (reminder);
+    }
+
     private void apply_checklist (Objects.Source source, string uuid, int operation, Json.Object payload, string kind) {
         if (operation == 2) {
             delete_any (uuid);
@@ -1455,7 +1707,7 @@ public class Services.Things : GLib.Object {
         if (item == null) {
             item = new Objects.Item ();
             item.id = uuid;
-            item.extra_data = build_extra_data (kind, false);
+            item.extra_data = build_extra_data (kind, false, false, false);
             apply_checklist_item_fields (item, payload);
 
             Objects.Item ? parent = Services.Store.instance ().get_item (item.parent_id);
@@ -1468,7 +1720,7 @@ public class Services.Things : GLib.Object {
             return;
         }
 
-        item.extra_data = build_extra_data (kind, false);
+        item.extra_data = build_extra_data (kind, false, false, false);
         bool old_checked = item.checked;
         apply_checklist_item_fields (item, payload);
         Services.Store.instance ().update_item (item);
@@ -1719,6 +1971,84 @@ public class Services.Things : GLib.Object {
 
     private string inbox_project_id (Objects.Source source) {
         return source.id + "-inbox";
+    }
+
+    /*
+     * Recurrence templates, kept on the source as id -> rule so they survive
+     * restarts (see Objects.SourceThingsData.recurrence_templates).
+     */
+
+    private Json.Object templates (Objects.Source source) {
+        string data = source.things_data.recurrence_templates;
+        if (data == null || !data.has_prefix ("{")) {
+            return new Json.Object ();
+        }
+
+        var parser = new Json.Parser ();
+        try {
+            parser.load_from_data (data, -1);
+        } catch (Error e) {
+            return new Json.Object ();
+        }
+
+        unowned Json.Node ? root = parser.get_root ();
+        if (root == null || root.get_node_type () != Json.NodeType.OBJECT) {
+            return new Json.Object ();
+        }
+
+        return root.get_object ();
+    }
+
+    private void store_templates (Objects.Source source, Json.Object object) {
+        var generator = new Json.Generator ();
+        var node = new Json.Node (Json.NodeType.OBJECT);
+        node.set_object (object);
+        generator.set_root (node);
+
+        source.things_data.recurrence_templates = generator.to_data (null);
+        source.save ();
+    }
+
+    private bool is_known_template (Objects.Source source, string uuid) {
+        return templates (source).has_member (uuid);
+    }
+
+    private void remember_template (Objects.Source source, string uuid, Json.Object rule) {
+        var object = templates (source);
+        var node = new Json.Node (Json.NodeType.OBJECT);
+        node.set_object (rule);
+        object.set_member (uuid, node);
+        store_templates (source, object);
+    }
+
+    private void forget_template (Objects.Source source, string uuid) {
+        var object = templates (source);
+        if (!object.has_member (uuid)) {
+            return;
+        }
+
+        object.remove_member (uuid);
+        store_templates (source, object);
+    }
+
+    /*
+     * Instances carry no rule of their own, so the badge Planify shows comes
+     * from the template listed in "rt".
+     */
+    private void apply_instance_recurrence (Objects.Source source, Objects.Item item, string[] rt) {
+        if (rt.length == 0) {
+            return;
+        }
+
+        var object = templates (source);
+        if (!object.has_member (rt[0])) {
+            return;
+        }
+
+        unowned Json.Node node = object.get_member (rt[0]);
+        if (node.get_node_type () == Json.NodeType.OBJECT) {
+            ThingsUtil.apply_recurrence (item.due, node.get_object ());
+        }
     }
 
     /*

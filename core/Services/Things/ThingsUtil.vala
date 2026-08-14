@@ -51,6 +51,209 @@ public class Services.ThingsUtil : GLib.Object {
     public const int STATUS_COMPLETED = 3;
 
     /*
+     * Task6 "sb" (start bucket): which half of the day the task sits in.
+     */
+    public const int BUCKET_DAY = 0;
+    public const int BUCKET_EVENING = 1;
+
+    /*
+     * Recurrence rule "fu" (frequency unit) values. Things reuses Apple's
+     * NSCalendarUnit bit flags rather than an enum of its own.
+     */
+    public const int FREQ_YEAR = 4;
+    public const int FREQ_MONTH = 8;
+    public const int FREQ_DAY = 16;
+    public const int FREQ_WEEKDAY = 256;
+
+    // "ed" on a rule that never ends: 4001-01-01, not a real user date.
+    public const int64 RECURRENCE_NEVER_ENDS = 64092211200;
+
+    /*
+     * Reminder times ("ato") are seconds after local midnight on the task's
+     * scheduled day. Planify models a reminder as an absolute datetime, so the
+     * two only combine once the scheduled date is known.
+     */
+    public static string reminder_datetime_string (string date, int64 seconds_after_midnight) {
+        if (date.length < 10) {
+            return "";
+        }
+
+        string[] parts = date.substring (0, 10).split ("-");
+        if (parts.length != 3) {
+            return "";
+        }
+
+        var midnight = new GLib.DateTime.local (
+            int.parse (parts[0]), int.parse (parts[1]), int.parse (parts[2]), 0, 0, 0
+        );
+        if (midnight == null) {
+            return "";
+        }
+
+        return midnight.add_seconds ((double) seconds_after_midnight).format_iso8601 ();
+    }
+
+    public static int64 seconds_after_midnight (GLib.DateTime datetime) {
+        return datetime.get_hour () * 3600 + datetime.get_minute () * 60 + datetime.get_second ();
+    }
+
+    /*
+     * Things weekdays follow Apple's 1=Sunday…7=Saturday; Planify's
+     * recurrency_weeks is a comma-separated 1=Monday…7=Sunday list.
+     */
+    private static int weekday_to_planify (int things_weekday) {
+        return ((things_weekday + 5) % 7) + 1;
+    }
+
+    private static int weekday_from_planify (int planify_weekday) {
+        return (planify_weekday % 7) + 1;
+    }
+
+    /*
+     * Folds a Things "rr" recurrence rule into a Planify DueDate. Things
+     * expresses the schedule as an NSCalendarUnit frequency plus a list of
+     * offsets ("of"): weekday entries for weekly rules, day-of-month entries
+     * for monthly ones. Returns false when the rule uses a shape Planify has
+     * no way to express, so the caller can leave the task non-recurring
+     * rather than silently describing the wrong schedule.
+     */
+    public static bool apply_recurrence (Objects.DueDate due, Json.Object rule) {
+        int unit = (int) get_int_or (rule, "fu", 0);
+        int amount = (int) get_int_or (rule, "fa", 1);
+
+        switch (unit) {
+            case FREQ_DAY:
+                due.recurrency_type = RecurrencyType.EVERY_DAY;
+                break;
+            case FREQ_WEEKDAY:
+                due.recurrency_type = RecurrencyType.EVERY_WEEK;
+                break;
+            case FREQ_MONTH:
+                due.recurrency_type = RecurrencyType.EVERY_MONTH;
+                break;
+            case FREQ_YEAR:
+                due.recurrency_type = RecurrencyType.EVERY_YEAR;
+                break;
+            default:
+                return false;
+        }
+
+        due.is_recurring = true;
+        due.recurrency_interval = amount > 0 ? amount : 1;
+        due.recurrency_weeks = "";
+        due.recurrency_count = 0;
+        due.recurrency_end = "";
+
+        if (unit == FREQ_WEEKDAY && rule.has_member ("of")) {
+            var weeks = new StringBuilder ();
+            foreach (unowned Json.Node offset_node in rule.get_array_member ("of").get_elements ()) {
+                if (offset_node.get_node_type () != Json.NodeType.OBJECT) {
+                    continue;
+                }
+
+                var offset = offset_node.get_object ();
+                if (!offset.has_member ("wd")) {
+                    continue;
+                }
+
+                if (weeks.len > 0) {
+                    weeks.append (",");
+                }
+                weeks.append (weekday_to_planify ((int) get_int_or (offset, "wd", 1)).to_string ());
+            }
+            due.recurrency_weeks = weeks.str;
+        }
+
+        int64 count = get_int_or (rule, "rc", 0);
+        if (count > 0) {
+            due.recurrency_count = (int) count;
+        }
+
+        int64 end = get_int_or (rule, "ed", RECURRENCE_NEVER_ENDS);
+        if (end > 0 && end < RECURRENCE_NEVER_ENDS) {
+            due.recurrency_end = day_epoch_to_date_string (end);
+        }
+
+        return true;
+    }
+
+    /*
+     * Builds the "rr" rule for a Planify DueDate. Mirrors apply_recurrence;
+     * "tp" 0 means the next instance is scheduled from the due date (Planify's
+     * only model), and "rrv" 4 is the rule version Things 3 writes.
+     */
+    public static void add_recurrence (Json.Builder builder, Objects.DueDate due, int64 series_start) {
+        builder.set_member_name ("rr");
+
+        if (!due.is_recurring || due.recurrency_type == RecurrencyType.NONE) {
+            builder.add_null_value ();
+            return;
+        }
+
+        int unit;
+        switch (due.recurrency_type) {
+            case RecurrencyType.EVERY_DAY:
+                unit = FREQ_DAY;
+                break;
+            case RecurrencyType.EVERY_WEEK:
+                unit = FREQ_WEEKDAY;
+                break;
+            case RecurrencyType.EVERY_MONTH:
+                unit = FREQ_MONTH;
+                break;
+            case RecurrencyType.EVERY_YEAR:
+                unit = FREQ_YEAR;
+                break;
+            default:
+                builder.add_null_value ();
+                return;
+        }
+
+        builder.begin_object ();
+
+        builder.set_member_name ("fu");
+        builder.add_int_value (unit);
+        builder.set_member_name ("fa");
+        builder.add_int_value (due.recurrency_interval > 0 ? due.recurrency_interval : 1);
+
+        builder.set_member_name ("of");
+        builder.begin_array ();
+        if (unit == FREQ_WEEKDAY && due.recurrency_weeks != "") {
+            foreach (string week in due.recurrency_weeks.split (",")) {
+                if (week.strip () == "") {
+                    continue;
+                }
+                builder.begin_object ();
+                builder.set_member_name ("wd");
+                builder.add_int_value (weekday_from_planify (int.parse (week.strip ())));
+                builder.end_object ();
+            }
+        }
+        builder.end_array ();
+
+        builder.set_member_name ("rc");
+        builder.add_int_value (due.recurrency_count);
+
+        builder.set_member_name ("ed");
+        int64 end = date_string_to_day_epoch (due.recurrency_end);
+        builder.add_int_value (end >= 0 ? end : RECURRENCE_NEVER_ENDS);
+
+        builder.set_member_name ("sr");
+        builder.add_int_value (series_start);
+        builder.set_member_name ("ia");
+        builder.add_int_value (series_start);
+
+        builder.set_member_name ("tp");
+        builder.add_int_value (0);
+        builder.set_member_name ("ts");
+        builder.add_int_value (0);
+        builder.set_member_name ("rrv");
+        builder.add_int_value (4);
+
+        builder.end_object ();
+    }
+
+    /*
      * Generates a Things-style 22-character Base58 id from 16 random bytes.
      * The top bit is forced so the value always encodes to exactly 22
      * characters; Things.app crashes on ids it cannot Base58-decode.

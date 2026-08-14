@@ -1732,6 +1732,33 @@ public class Objects.Item : Objects.BaseObject {
     }
 
     public async GLib.DateTime? update_next_recurrency () {
+        // Things Cloud owns the recurrence: a repeating task there is a hidden
+        // template plus the dated instances it generates, and what the user
+        // ticks off is one instance. Rolling its date forward the way Planify
+        // does for other backends would leave the instance permanently open
+        // while Things spawned the next one anyway, so complete it instead and
+        // report no locally-computed next occurrence.
+        if (project.source_type == SourceType.THINGS) {
+            bool old_checked = checked;
+            string old_completed_at = completed_at;
+
+            checked = true;
+            completed_at = new GLib.DateTime.now_local ().to_string ();
+
+            loading = true;
+            var things_response = yield Services.Things.get_default ().complete_item (this);
+            loading = false;
+
+            if (!things_response.status) {
+                checked = old_checked;
+                completed_at = old_completed_at;
+                return null;
+            }
+
+            Services.Store.instance ().complete_item (this, old_checked);
+            return null;
+        }
+
         var next_recurrency = Utils.Datetime.next_recurrency (due.datetime, due);
         due.date = Utils.Datetime.get_todoist_datetime_format (next_recurrency);
 

@@ -365,6 +365,17 @@ public class Objects.SourceThingsData : Objects.SourceData {
     public string history_key { get; set; default = ""; }
     public int64 server_index { get; set; default = 0; }
 
+    /*
+     * Recurrence templates, as a JSON object of Things entity id -> "rr" rule.
+     *
+     * A repeating Things task is a hidden template plus the dated instances it
+     * generates; only the instances are real tasks. The template ids have to
+     * outlive the process because the history keeps sending bookkeeping
+     * updates for them, and an update for an id we no longer recognise would
+     * be mistaken for a brand new task.
+     */
+    public string recurrence_templates { get; set; default = "{}"; }
+
     public SourceThingsData.from_json (string json) {
         Json.Parser parser = new Json.Parser ();
 
@@ -387,6 +398,10 @@ public class Objects.SourceThingsData : Objects.SourceData {
             if (object.has_member ("server_index")) {
                 server_index = object.get_int_member ("server_index");
             }
+
+            if (object.has_member ("recurrence_templates")) {
+                recurrence_templates = object.get_string_member ("recurrence_templates");
+            }
         } catch (Error e) {
             debug (e.message);
         }
@@ -408,6 +423,9 @@ public class Objects.SourceThingsData : Objects.SourceData {
 
         builder.set_member_name ("server_index");
         builder.add_int_value (server_index);
+
+        builder.set_member_name ("recurrence_templates");
+        builder.add_string_value (recurrence_templates);
 
         builder.end_object ();
 
