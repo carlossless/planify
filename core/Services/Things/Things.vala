@@ -512,6 +512,14 @@ public class Services.Things : GLib.Object {
         }
 
         if (object is Objects.Item) {
+            // Never uploaded, so there is nothing on the server to trash and
+            // the local delete is the whole operation.
+            if (needs_upload ((Objects.Item) object)) {
+                var done = new HttpResponse ();
+                done.status = true;
+                return done;
+            }
+
             HttpResponse ? blocked = ensure_item_writable ((Objects.Item) object);
             if (blocked != null) {
                 return blocked;
@@ -553,6 +561,10 @@ public class Services.Things : GLib.Object {
         var source = item.source;
         if (source == null || source.things_data == null) {
             return not_supported ();
+        }
+
+        if (needs_upload (item)) {
+            return yield upload_new_item (item);
         }
 
         HttpResponse ? blocked = ensure_item_writable (item);
@@ -598,6 +610,10 @@ public class Services.Things : GLib.Object {
         var source = item.source;
         if (source == null || source.things_data == null) {
             return not_supported ();
+        }
+
+        if (needs_upload (item)) {
+            return yield upload_new_item (item);
         }
 
         HttpResponse ? blocked = ensure_item_writable (item);
@@ -708,6 +724,10 @@ public class Services.Things : GLib.Object {
         var source = item.project.source;
         if (source == null || source.things_data == null) {
             return not_supported ();
+        }
+
+        if (needs_upload (item)) {
+            return yield upload_new_item (item);
         }
 
         HttpResponse ? blocked = ensure_item_writable (item);
@@ -1401,13 +1421,48 @@ public class Services.Things : GLib.Object {
             );
         }
 
-        if (stored_kind (item) == "" && !ThingsUtil.is_things_uuid (item.id)) {
+        if (needs_upload (item)) {
             return not_supported (
                 _("This task uses an older Things format that Planify can’t safely modify.")
             );
         }
 
         return null;
+    }
+
+    /*
+     * The item exists only in Planify: it still carries the local id Planify
+     * minted and no Things entity kind, so nothing on the server corresponds to
+     * it. Sending an update would ask Things to Base58-decode a hyphenated id,
+     * which is exactly the crash this backend guards against — the first write
+     * has to create it instead.
+     */
+    private bool needs_upload (Objects.Item item) {
+        return stored_kind (item) == "" && !ThingsUtil.is_things_uuid (item.id);
+    }
+
+    /*
+     * Uploads a Planify-only task and adopts the Base58 id Things needs. The
+     * create carries the item's whole current state, so it stands in for
+     * whichever edit triggered it.
+     */
+    private async HttpResponse upload_new_item (Objects.Item item) {
+        if (item.parent_id != "") {
+            Objects.Item ? parent = Services.Store.instance ().get_item (item.parent_id);
+            if (parent == null || needs_upload (parent)) {
+                return not_supported (_("Add this subtask’s parent to Things first."));
+            }
+        }
+
+        string local_id = item.id;
+        HttpResponse response = yield add_item (item);
+
+        if (response.status && response.data != "") {
+            Services.Store.instance ().update_item_id (local_id, response.data);
+            Services.Store.instance ().update_item (item);
+        }
+
+        return response;
     }
 
     /*

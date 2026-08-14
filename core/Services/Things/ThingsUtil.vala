@@ -290,14 +290,45 @@ public class Services.ThingsUtil : GLib.Object {
         return builder.str;
     }
 
+    /*
+     * True for ids Things itself would accept: Base58 over 16 bytes.
+     *
+     * Length alone is not the test. generate_uuid forces the top bit so its own
+     * ids are always 22 characters, but Things does not, and a 16-byte value
+     * below 58^21 encodes to 21 — a real account is full of those. What must be
+     * rejected is anything that cannot be a 16-byte id: legacy hyphenated
+     * UUIDs (the hyphen is not in the alphabet) and values that overflow 16
+     * bytes. The lower length bound keeps short incidental strings out; a
+     * genuine id below 20 characters needs a random value under 58^19, which
+     * is about one in ten thousand of ever happening.
+     */
     public static bool is_things_uuid (string id) {
-        if (id.length != 22) {
+        if (id == null || id.length < 20 || id.length > 22) {
             return false;
         }
 
+        var bytes = new Gee.ArrayList<int> ();
+        bytes.add (0);
+
         for (int i = 0; i < id.length; i++) {
-            if (B58_ALPHABET.index_of_char (id[i]) < 0) {
+            int digit = B58_ALPHABET.index_of_char (id[i]);
+            if (digit < 0) {
                 return false;
+            }
+
+            int carry = digit;
+            for (int j = 0; j < bytes.size; j++) {
+                int value = bytes[j] * 58 + carry;
+                bytes[j] = value & 0xFF;
+                carry = value >> 8;
+            }
+
+            while (carry > 0) {
+                if (bytes.size >= 16) {
+                    return false;
+                }
+                bytes.add (carry & 0xFF);
+                carry = carry >> 8;
             }
         }
 

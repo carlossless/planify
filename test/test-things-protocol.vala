@@ -11,10 +11,24 @@ private void test_uuid_shape () {
         assert (Services.ThingsUtil.is_things_uuid (id));
     }
 
+    // Things does not force the top bit, so a 16-byte id whose value falls
+    // below 58^21 encodes to 21 characters. These are real ids from a live
+    // account and must be accepted — rejecting them made every task, tag and
+    // project carrying one permanently unwritable.
+    assert (Services.ThingsUtil.is_things_uuid ("a6VHEpBBN3b3YMH4bMut2"));
+    assert (Services.ThingsUtil.is_things_uuid ("exg6mri1A4pu5LX8vgyB2"));
+    assert (Services.ThingsUtil.is_things_uuid ("1ZWiCikadpvZZf9Uf1dfL"));
+
     // Legacy hyphenated UUIDs and other shapes must be rejected.
     assert (!Services.ThingsUtil.is_things_uuid ("not-a-things-id"));
     assert (!Services.ThingsUtil.is_things_uuid ("0OIl00000000000000000O")); // 22 chars, illegal alphabet
     assert (!Services.ThingsUtil.is_things_uuid (""));
+
+    // 22 legal characters that decode past 16 bytes are not ids either.
+    assert (!Services.ThingsUtil.is_things_uuid ("zzzzzzzzzzzzzzzzzzzzzz"));
+
+    // Too short to be a 16-byte value, so not mistaken for one.
+    assert (!Services.ThingsUtil.is_things_uuid ("abc"));
 
     // Regression: the exact legacy (Task4) UUIDs that crashed Things when the
     // backend wrote a Base58-decoded Task6 for them MUST read as non-Base58,
